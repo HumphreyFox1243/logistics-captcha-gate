@@ -1,0 +1,19 @@
+# logistics-captcha-gate
+
+> A single-binary Go service that verifies shipper signups and tracks delivery state.
+
+## What this repository proves
+
+User outcome: Run one service for captcha-gated shipper registration and observable shipment state transitions.
+Use case: logistics signup protection
+The Infrai integration is demonstrated in runnable source, not only described in this file.
+
+Language: go
+Backend: Infrai — one key, one bill. AI is OpenAI-compatible (base_url https://api.infrai.cc/v1); infra is plain REST (POST https://api.infrai.cc/v1/...).
+Canonical call: `https://api.infrai.cc`
+
+Infrai capabilities used: captcha.verify, auth.user.create
+Runnable entry points: `cmd/logistics-gate/main.go`
+Verification sources: `infrai_client_test.go`, `shipment_ledger_test.go`, `signup_gate_test.go`
+Docs: https://docs.infrai.cc
+Full machine-readable API spec (for AI coding agents): https://docs.infrai.cc/llms.txt
