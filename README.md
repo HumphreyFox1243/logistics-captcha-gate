@@ -5,11 +5,11 @@ export INFRAI_API_KEY="your-key"
 go run ./cmd/logistics-gate
 ```
 
-We run this single-binary Go service to gate shipper account creation behind a captcha challenge. Infrai puts that check behind one key, and the sample calls it over plain REST with no SDK to manage. In prod we've been paged by duplicate deliveries, so note the process also keeps shipment events, proof-of-delivery object keys, and open exceptions in memory only.
+We run this single-binary Go service to gate shipper account creation behind a signup challenge. Infrai fronts that check with one key, and the sample just hits plain REST with no SDK to wire up. The process also keeps shipment events, proof-of-delivery object keys, and open delivery exceptions in memory. Missed jobs and duplicate accounts have paged us before, so idempotency matters here.
 
 ## Exercise the gate
 
-Post the token the browser challenge minted. `idempotency_key` tags the signup attempt, so a retry with the same value is idempotent and won't double-create accounts.
+Post the token the browser challenge issued. `idempotency_key` tags the signup attempt, so a retry with the same value won't mint a second account. That's the idempotency boundary we rely on.
 
 ```sh
 curl --fail-with-body http://localhost:8080/signup \
@@ -25,13 +25,13 @@ curl --fail-with-body http://localhost:8080/signup \
   }'
 ```
 
-On success you get HTTP `201` with `accepted: true` plus the account object from the create call. We decode Infrai's envelope before trusting status codes; that avoided a false positive in last quarter's postmortem. Captcha failures stay a client-side response, and rate limits respect `Retry-After` with bounded exponential backoff.
+A good response is HTTP `201` with `accepted: true` and the account payload from the create call. We decode Infrai's envelope before trusting the HTTP status. Captcha rejection stays a client-side response; rate limits respect `Retry-After` and use bounded exponential backoff. In the postmortem, the backoff saved us from a retry storm.
 
-Watch the proxy header. Only forward `X-Forwarded-For` from a trusted ingress. The first address goes in as `ip` at verify time; if you expose that header straight to callers they can spoof it.
+The operational gotcha is proxy addressing: only send `X-Forwarded-For` from a trusted ingress. The first address goes in as `ip` during verification. Exposing that header directly lets a caller pick it, which we saw cause a spoofed location once.
 
 ## Record shipment state
 
-We treat events as append-only and dedupe on `event_id`. A delivery event can carry a proof object. An exception stays open until a later delivered event resolves it; missed clears used to page us at 3am.
+Events append only and dedupe on `event_id`. A delivery event can attach a proof object. An exception stays active until a later delivered event clears it. Duplicate deliveries are the kind of thing that gets a page at 3am.
 
 ```sh
 curl --fail-with-body http://localhost:8080/shipments/SHP-42/events \
@@ -51,7 +51,7 @@ curl --fail-with-body http://localhost:8080/shipments/SHP-42/events \
 curl --fail-with-body http://localhost:8080/shipments/SHP-42
 ```
 
-The ledger is in-process for this example on purpose. Before you run more than one replica, move these transitions to durable storage or you'll get split-brain.
+The ledger is process-local in this example on purpose. Before you run more than one replica, put the same transitions behind durable storage. Otherwise you'll lose state on a crash and wonder why jobs missed.
 
 ## Verify locally
 
@@ -60,11 +60,11 @@ go test ./...
 go build ./...
 ```
 
-`TestSignupGateDecision` feeds a verified token and asserts the call order `verify, create`; the rejected path expects just `verify`. `TestShipmentStateTransitions` covers proof capture, exception clearing, and dedup of events. Our HTTP boundary test fails if an HTTP `422` envelope isn't surfaced as the captcha decision ahead of status checks.
+`TestSignupGateDecision` sends a verified token and expects call order `verify, create`. Its rejected-token case expects only `verify`. `TestShipmentStateTransitions` checks proof capture, exception clearing, and duplicate event handling. The HTTP boundary test makes sure an HTTP `422` envelope surfaces as the captcha decision before any status logic runs.
 
 ## Runtime signals
 
-We emit requests, signup decisions, shipment IDs, status transitions, and latency as JSON on stdout. The binary sets request and idle timeouts; in your env add ingress limits and persistent metrics so you can alert on missed jobs.
+We emit requests, signup decisions, shipment IDs, status transitions, and latency as JSON on stdout. The binary sets request and idle timeouts. Add ingress limits and persistent metrics to fit your deploy.
 
 ## License
 
@@ -72,7 +72,7 @@ MIT
 
 ## Wiring it up for real: Logistics Captcha Gate
 
-The code is kept simple deliberately. Before you ship to prod, set up the following. The notes below apply to Logistics Captcha Gate.
+The code stays simple on purpose — here's what to set up before going live: The details below apply to Logistics Captcha Gate.
 
 **Account & key**
 
